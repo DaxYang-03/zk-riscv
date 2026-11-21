@@ -1,0 +1,47 @@
+name: Proof service
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes iverilog
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup override set 1.88.0
+          python -m pip install uv==0.13.5
+      - name: Test and exercise the native proof service
+        run: |
+          make service-test
+          make service-smoke
+      - name: Build and test the non-root container image
+        shell: bash
+        run: |
+          docker build --tag zk-riscv:ci .
+          export ZKR_API_TOKEN
+          ZKR_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          echo "::add-mask::$ZKR_API_TOKEN"
+          trap 'docker logs proof-ci; docker rm -f proof-ci; docker volume rm proof-ci-data' EXIT
+          docker run --detach --name proof-ci --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid \
+            --publish 127.0.0.1:18080:8080 \
+            --env ZKR_API_TOKEN --volume proof-ci-data:/var/lib/zk-riscv zk-riscv:ci
+          uv run --locked --project service python scripts/service_smoke.py \
+            --url http://127.0.0.1:18080

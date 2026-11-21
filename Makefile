@@ -7,6 +7,7 @@ VVP ?= vvp
 YOSYS ?= yosys
 CARGO ?= cargo
 PYTHON ?= python3
+UV ?= uv
 BUILD_DIR ?= build
 export CARGO_TARGET_DIR ?= $(abspath $(BUILD_DIR))/cargo
 
@@ -15,8 +16,12 @@ TRACE := $(BUILD_DIR)/trace.csv
 PROOF := $(BUILD_DIR)/proof.bin
 DEMO_FIXTURE := fixtures/demo_trace.csv
 PROOF_MANIFEST := proof/Cargo.toml
+SERVICE_PROVER := $(abspath $(CARGO_TARGET_DIR))/release/zk-riscv-proof
+SERVICE_SIMULATOR := $(abspath $(BUILD_DIR))/tb_trace.vvp
+SERVICE_ENV := ZKR_VVP="$${ZKR_VVP:-$(VVP)}" ZKR_SIMULATOR="$(SERVICE_SIMULATOR)" ZKR_PROVER="$(SERVICE_PROVER)"
 
 .PHONY: help doctor trace demo test test-rtl test-proof formal check evidence
+.PHONY: service-build service-test service-smoke serve
 help:
 	@printf '%s\n' \
 		'make doctor     Check for the required local tools' \
@@ -25,7 +30,10 @@ help:
 		'make test       Run the RTL and Halo2 regression tests' \
 		'make formal     Check bounded RTL equivalence with Yosys SAT' \
 		'make check      Run the regressions, bounded checks and demo' \
-		'make evidence   Run the checks and collect logs and artifact hashes'
+		'make evidence   Run the checks and collect logs and artifact hashes' \
+		'make serve      Build and launch the authenticated proof API' \
+		'make service-test   Run the service tests' \
+		'make service-smoke  Generate and verify proofs over HTTP'
 
 doctor:
 	@command -v "$(IVERILOG)"
@@ -70,3 +78,17 @@ check: test formal demo
 
 evidence:
 	$(PYTHON) scripts/run_evidence.py --build-dir "$(BUILD_DIR)"
+
+service-build: $(BUILD_DIR)/tb_trace.vvp
+	"$(CARGO)" build --locked --release --manifest-path "$(PROOF_MANIFEST)"
+
+serve: service-build
+	$(SERVICE_ENV) ZKR_DB_PATH="$${ZKR_DB_PATH:-$(abspath $(BUILD_DIR))/service/jobs.sqlite3}" \
+		"$(UV)" run --locked --no-dev --project service python -m zkservice
+
+service-test:
+	"$(UV)" run --locked --project service pytest service/tests
+
+service-smoke: service-build
+	$(SERVICE_ENV) "$(UV)" run --locked --project service python scripts/service_smoke.py \
+		--prover "$(SERVICE_PROVER)"

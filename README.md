@@ -1,10 +1,34 @@
 # zk-RISC-V
 
-A runnable hardware-to-proof prototype for verifiable RISC-V execution. The demo simulates a synthesizable SystemVerilog core, exports four RV32I `ADDI` retirements, and creates a Halo2 proof against the resulting execution witness. A separate local verifier checks the proof against four expected instruction words and two expected final register values.
+A self-hosted service for producing verifiable RISC-V execution receipts. Submit four RV32I `ADDI` instructions over HTTP. A durable worker simulates a synthesizable SystemVerilog core, proves the execution with Halo2, and stores the proof after verifying it in a separate process. Consumers can download the artifact and verify it offline.
 
-**Prototype scope** · one opcode · four proof steps · full 32-register state · native verifier
+**Execution profile** · RV32I `ADDI` · four proof steps · full 32-register state · native verifier
 
-## Run the demo
+## Run the proof service
+
+Install GNU Make, Icarus Verilog, Rust 1.88 with Cargo, Python 3.11 or newer, and `uv`. From the repository root, generate an operator token and start the service.
+
+```sh
+export ZKR_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+make serve
+```
+
+Use the same token in a second terminal to submit a job and download its proof. The SDK checks the download against the size and SHA-256 in the job result.
+
+```sh
+PYTHONPATH=service python3 -m zkclient prove \
+  0x00700293 0xffd28293 0xfff00313 0x00230313 \
+  --idempotency-key first-proof --output build/service-proof.bin
+
+build/cargo/release/zk-riscv-proof --verify \
+  build/service-proof.bin 0x00700293 0xffd28293 0xfff00313 0x00230313 4 1
+```
+
+The service listens on `127.0.0.1:8080` and stores jobs in `build/service/jobs.sqlite3` by default. The running service publishes interactive API documentation at `/docs` and its schema at `/openapi.json`.
+
+[HTTP API and Python SDK](docs/api.md) · [Container deployment and operations](docs/operations.md)
+
+## Run the hardware pipeline directly
 
 Install GNU Make, Icarus Verilog (`iverilog` and `vvp`), Yosys, and Rust with Cargo. The CI workflow targets Ubuntu 24.04 and Rust 1.88.0. The evidence collector also requires Python 3.9 or newer.
 
@@ -38,10 +62,13 @@ cargo run --locked --release --manifest-path proof/Cargo.toml -- \
 
 ```mermaid
 flowchart LR
-    A[SystemVerilog core] -->|Retirements| B[CSV trace]
+    J[Authenticated jobs API] --> Q[(SQLite queue and proofs)]
+    Q -->|Claim job| A[SystemVerilog core]
+    A -->|Retirements| B[CSV trace]
     B -->|Validated witness| C[Halo2 prover]
     C -->|Proof| E[Native verifier]
     D[Expected program and final x5/x6] -->|Public inputs| E
+    E -->|Verified proof| Q
 ```
 
 The circuit starts with all registers at zero. It constrains `ADDI` instruction decoding, sign extension, addition modulo `2^32`, writes to the selected destination, preservation of all other registers, and the zero value of `x0`. The final values of `x5` and `x6` are bound to the verifier's public inputs.
@@ -74,6 +101,8 @@ Another execution engine can supply a compatible CSV to the same prover. [Trace 
 | `make demo` | Generate a simulation trace, compare it with the canonical fixture, and create and verify a proof in separate processes |
 | `make check` | Run the regressions, bounded check, and end-to-end demo |
 | `make evidence` | Run the verification workflow and record logs, trace, proof, and a structured summary under `build/evidence/` |
+| `make service-test` | Exercise API contracts, job persistence, and worker behavior |
+| `make service-smoke` | Submit two programs over HTTP, verify both proofs offline, reject tampered bytes, and confirm a proof survives restart |
 
 ## Roadmap
 
@@ -91,6 +120,9 @@ Another execution engine can supply a compatible CSV to the same prover. [Trace 
 | [`rtl/`](rtl/) | Synthesizable core and self-checking simulation testbenches |
 | [`proof/`](proof/) | Trace parser, Halo2 execution circuit, and prover/verifier CLI |
 | [`formal/`](formal/) | Bounded reference model and Yosys SAT script |
+| [`service/zkservice/`](service/zkservice/) | Authenticated HTTP API, durable queue, worker, and retention command |
+| [`service/zkclient/`](service/zkclient/) | Standard-library Python SDK and operator CLI |
+| [`Dockerfile`](Dockerfile) | Non-root service image built from locked Python and Rust dependencies |
 | [`fixtures/`](fixtures/) | Expected simulation trace for the four-step demo |
 | [`docs/design.md`](docs/design.md) | Hardware interface, trace format, proof statement, and trust model |
 
