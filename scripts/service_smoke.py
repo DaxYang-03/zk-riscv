@@ -13,8 +13,8 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from http.client import HTTPException
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import urlopen
 
 from zkclient import Client, Job, ServiceError
@@ -37,7 +37,7 @@ def ready(base_url: str, process: subprocess.Popen | None = None) -> None:
             with urlopen(base_url + "/readyz", timeout=1) as response:
                 if response.status == 200 and json.load(response) == {"status": "ok"}:
                     return
-        except (TimeoutError, URLError, ValueError):
+        except (HTTPException, OSError, ValueError):
             pass
         time.sleep(0.15)
     raise RuntimeError(f"Service did not become ready at {base_url}")
