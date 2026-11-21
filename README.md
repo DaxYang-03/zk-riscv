@@ -1,10 +1,32 @@
 # zk-RISC-V
 
-A self-hosted service for producing verifiable RISC-V execution receipts. Submit four RV32I `ADDI` instructions over HTTP. A durable worker simulates a synthesizable SystemVerilog core, proves the execution with Halo2, and stores the proof after verifying it in a separate process. Consumers can download the artifact and verify it offline.
+zk-RISC-V proves bounded execution of a synthesizable RV32I subset with Halo2. The expanded VM covers `ADDI`, `LW`, `SW`, `BEQ`, and `BNE`. Its circuit binds instruction fetches to a public ROM, constrains the program counter and register file, and checks the consistency of an address-and-time-sorted memory history.
 
-**Execution profile** · RV32I `ADDI` · four proof steps · full 32-register state · native verifier
+**Bounded VM profile** · 8 retirements · 16 public ROM words · 16 data words · 32 registers · native verifier
 
-## Run the proof service
+## Run the bounded VM
+
+Install GNU Make, Icarus Verilog, Rust 1.88 with Cargo, Python 3.11 or newer, and Yosys for synthesis checks.
+
+```sh
+make vm-demo
+make vm-check
+```
+
+The [fixture program](fixtures/vm_program.hex) writes `17`, reads it into `x5`, and takes a forward `BEQ` that skips an instruction. It then overwrites the same data word with `20`, reads it into `x6`, and takes a backward `BNE`. After eight retirements the public statement is `PC = 28, x5 = 17, x6 = 20`.
+
+```sh
+cargo run --locked --release --manifest-path vm/Cargo.toml -- \
+  verify fixtures/vm_program.hex build/vm-proof.bin 28 17 20
+```
+
+The fixture produces a 17,696-byte proof. The verifier uses the proof and the 19 public values encoded by the ROM and final-state arguments. `make vm-fuzz` checks 23 directed programs and 512 seeded random programs by default. It compares each retirement and trap with an independent Python execution model. `make vm-proof-fuzz` additionally produces and verifies Halo2 proofs for 16 sampled programs. The targets write coverage reports to `build/vm-fuzz.json` and `build/vm-proof-fuzz.json`.
+
+[Execution, memory constraints, and trace format](docs/vm.md)
+
+## Run the legacy ADDI proof service
+
+The HTTP API continues to serve the four-step ADDI profile. It persists authenticated jobs and proof artifacts, and the Python SDK can download receipts for offline verification.
 
 Install GNU Make, Icarus Verilog, Rust 1.88 with Cargo, Python 3.11 or newer, and `uv`. From the repository root, generate an operator token and start the service.
 
@@ -28,7 +50,7 @@ The service listens on `127.0.0.1:8080` and stores jobs in `build/service/jobs.s
 
 [HTTP API and Python SDK](docs/api.md) · [Container deployment and operations](docs/operations.md)
 
-## Run the hardware pipeline directly
+## Run the four-step ADDI pipeline directly
 
 Install GNU Make, Icarus Verilog (`iverilog` and `vvp`), Yosys, and Rust with Cargo. The CI workflow targets Ubuntu 24.04 and Rust 1.88.0. The evidence collector also requires Python 3.9 or newer.
 
@@ -58,7 +80,7 @@ cargo run --locked --release --manifest-path proof/Cargo.toml -- \
 | `0x08` | `0xfff00313` | `addi x6, x0, -1` | `x6 = 0xffffffff` |
 | `0x0c` | `0x00230313` | `addi x6, x6, 2` | `x6 = 1` |
 
-## How the pieces fit
+## How the ADDI service works
 
 ```mermaid
 flowchart LR
@@ -75,7 +97,7 @@ The circuit starts with all registers at zero. It constrains `ADDI` instruction 
 
 The CSV parser checks the RTL retirement records, including the PC sequence. In-circuit instruction order follows the four fixed proof steps. The verification result establishes the register transition relation for the public inputs under the proof system's assumptions. A physical-device attestation protocol and smart-contract verifier are future work. [Read the design and trust model](docs/design.md).
 
-## Prove a custom program
+## Prove a four-step ADDI program
 
 Give the trace simulator a file containing four `ADDI` words, each written as eight hexadecimal digits. This program exercises wraparound and writes to `x0`. It leaves `x5 = 2` and `x6 = 0xfffffffe`.
 
@@ -95,6 +117,9 @@ Another execution engine can supply a compatible CSV to the same prover. [Trace 
 
 | Command | What it runs |
 | --- | --- |
+| `make vm-check` | Expanded VM circuit tests, Yosys synthesis, RTL differential fuzzing, and independent Halo2 proof verification |
+| `make vm-fuzz VM_FUZZ_SEED=0xcafe VM_FUZZ_CASES=1024` | Re-run the differential checks with a selected seed and random case count |
+| `make vm-proof-fuzz` | Prove sampled RTL traces and verify them against the Python model's public state |
 | `make test-rtl` | Self-checking RTL simulation for signed immediates, wraparound, consecutive writes, `x0`, trap handling, and reset |
 | `make test-proof` | Rust tests for valid and malformed witnesses and tampered proof statements |
 | `make formal` | Bounded Yosys SAT check of RTL interface behavior against a reference model, with its log in `build/formal.log` |
@@ -108,8 +133,8 @@ Another execution engine can supply a compatible CSV to the same prover. [Trace 
 
 | Planned milestone | Acceptance criteria |
 | --- | --- |
-| Shared execution specification | Derive test cases and circuit inputs for more integer operations. Compare RTL, a reference interpreter, and the proof circuit against the same corpus. |
-| Memory and constraints | Specify load and store semantics, including alignment and failure behavior. Add memory consistency constraints and measure their effect on proof size and verification time. |
+| Larger execution windows | Evaluate scalable permutation and register arguments, then measure proof and verification cost as the execution window grows. |
+| Broader instruction support | Extend the ISA with more integer operations and integrate the expanded proof profile into the service under a versioned API. |
 | Agent-assisted review | Generate changes and test cases from the specification. Require independent review of RTL and circuit changes, deterministic regressions, and recorded solver results before merging generated changes. |
 | On-chain verifier research | Select a chain and compatible proof backend. Measure verifier cost on that chain and test rejection of malformed proofs and mismatched public inputs. |
 
@@ -117,13 +142,15 @@ Another execution engine can supply a compatible CSV to the same prover. [Trace 
 
 | Path | Contents |
 | --- | --- |
-| [`rtl/`](rtl/) | Synthesizable core and self-checking simulation testbenches |
-| [`proof/`](proof/) | Trace parser, Halo2 execution circuit, and prover/verifier CLI |
+| [`rtl/`](rtl/) | Synthesizable VM and ADDI cores and simulation testbenches |
+| [`vm/`](vm/) | Eight-step trace parser, Halo2 execution and memory circuits, and prover/verifier CLI |
+| [`proof/`](proof/) | Four-step ADDI trace parser, circuit, and CLI |
 | [`formal/`](formal/) | Bounded reference model and Yosys SAT script |
 | [`service/zkservice/`](service/zkservice/) | Authenticated HTTP API, durable queue, worker, and retention command |
 | [`service/zkclient/`](service/zkclient/) | Standard-library Python SDK and operator CLI |
 | [`Dockerfile`](Dockerfile) | Non-root service image built from locked Python and Rust dependencies |
-| [`fixtures/`](fixtures/) | Expected simulation trace for the four-step demo |
-| [`docs/design.md`](docs/design.md) | Hardware interface, trace format, proof statement, and trust model |
+| [`fixtures/`](fixtures/) | Canonical program and simulation traces for both profiles |
+| [`docs/vm.md`](docs/vm.md) | Expanded VM execution, memory constraints, and trace contract |
+| [`docs/design.md`](docs/design.md) | Legacy ADDI interface, trace contract, and trust model |
 
 Licensed under the [MIT License](LICENSE).

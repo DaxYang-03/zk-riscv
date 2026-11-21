@@ -1,5 +1,6 @@
 /build/
 /proof/target/
+/vm/target/
 /service/.venv/
 __pycache__/
 .pytest_cache/

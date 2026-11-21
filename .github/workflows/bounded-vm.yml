@@ -1,0 +1,53 @@
+name: Bounded VM
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_DIR: build/cargo
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Icarus Verilog and Yosys
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes iverilog yosys
+
+      - name: Select Rust 1.88.0
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
+          rustup override set 1.88.0
+
+      - name: Check Rust formatting and lints
+        run: |
+          cargo fmt --manifest-path vm/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path vm/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run circuit tests, synthesis, differential simulation, and independent verification
+        run: make vm-check
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: bounded-vm-evidence
+          path: |
+            fixtures/vm_program.hex
+            build/vm-trace.csv
+            build/vm-proof.bin
+            build/vm-fuzz.json
+            build/vm-proof-fuzz.json
+            build/vm-synth.log
+          if-no-files-found: ignore
+          retention-days: 14
