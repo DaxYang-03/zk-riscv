@@ -1,0 +1,8 @@
+read_verilog -formal -sv rtl/zk_rv32i_addi.sv formal/addi_bounded.sv
+prep -top addi_bounded -flatten
+async2sync
+opt_clean
+
+# The first step asserts reset. Steps 2–5 present symbolic instruction slots.
+# Step 6 checks the final retirement. Reset may be reasserted at any step.
+sat -verify -prove-asserts -seq 6 -set-at 1 rst_n 0 -set-def-inputs -show-inputs

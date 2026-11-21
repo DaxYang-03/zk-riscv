@@ -1,0 +1,10 @@
+[package]
+name = "zk-riscv-proof"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+halo2_proofs = "=0.3.2"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
